@@ -10,10 +10,19 @@ find_package (Vulkan REQUIRED)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin/$<CONFIG>-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/${PROJECT_NAME})
 
+
+# GLFW Builds
+set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/vendor/GLFW)
+
+
 file(GLOB_RECURSE SOURCE_FILES "src/*.cpp")
 
 add_executable(${PROJECT_NAME} ${SOURCE_FILES})
-target_link_libraries(${PROJECT_NAME} PUBLIC Vulkan::Vulkan)
+target_link_libraries(${PROJECT_NAME} PUBLIC Vulkan::Vulkan glfw)
 
 # Compile defs
 target_compile_definitions(${PROJECT_NAME} PUBLIC
