@@ -39,7 +39,19 @@ class Application
         {
             createInstance();
             setupDebugMessenger();
+            createSurface();
             pickPhysicalDevice();
+            createLogicalDevice();
+        }
+
+        void createSurface()
+        {
+            VkSurfaceKHR surface;
+            if (glfwCreateWindowSurface(*m_Instance, window, nullptr, &surface) != 0)
+            {
+                throw std::runtime_error("Failed to create window surface!");
+            }
+            m_Surface = vk::raii::SurfaceKHR(m_Instance, surface);
         }
 
         void setupDebugMessenger()
@@ -58,23 +70,23 @@ class Application
                 .messageType = messageTypeFlags,
                 .pfnUserCallback = &debugCallback
             };
-            debugMessenger = instance.createDebugUtilsMessengerEXT( debugUtilsMessengerCreateInfoEXT );
+            m_DebugMessenger = m_Instance.createDebugUtilsMessengerEXT( debugUtilsMessengerCreateInfoEXT );
         }
 
         void pickPhysicalDevice()
         {
-            std::vector<vk::raii::PhysicalDevice> physicalDevices = instance.enumeratePhysicalDevices();
+            std::vector<vk::raii::PhysicalDevice> physicalDevices = m_Instance.enumeratePhysicalDevices();
             auto const devIter = std::ranges::find_if(physicalDevices, [&](const auto& physicalDevice) { return isDeviceSuitable(physicalDevice); });
             if (devIter == physicalDevices.end())
             {
                 throw std::runtime_error("Failed to find suitable GPU");
             }
 
-            physicalDevice = *devIter;
-            std::cout << "Device: " << physicalDevice.getProperties().deviceName << std::endl;
-            std::cout << "\tAPI-Version: " << physicalDevice.getProperties().apiVersion << std::endl;
-            std::cout << "\tDevice type: " << to_string(physicalDevice.getProperties().deviceType) << std::endl;
-            std::cout << "\tVendor Info: " << physicalDevice.getProperties().vendorID << std::endl;
+            m_PhysicalDevice = *devIter;
+            std::cout << "Device: " << m_PhysicalDevice.getProperties().deviceName << std::endl;
+            std::cout << "\tAPI-Version: " << m_PhysicalDevice.getProperties().apiVersion << std::endl;
+            std::cout << "\tDevice type: " << to_string(m_PhysicalDevice.getProperties().deviceType) << std::endl;
+            std::cout << "\tVendor Info: " << m_PhysicalDevice.getProperties().vendorID << std::endl;
         }
 
         bool isDeviceSuitable(const vk::raii::PhysicalDevice &physicalDevice)
@@ -163,6 +175,61 @@ class Application
             return supportsVulkan1_3 && supportsGraphicsCommandQueue && supportsRequiredExtensions && supportsRequiredFeatures;
         }
 
+        void createLogicalDevice()
+        {
+            // get queue index of first queue family that supports graphics
+            std::vector<vk::QueueFamilyProperties> queueFamilyProperties = m_PhysicalDevice.getQueueFamilyProperties();
+
+            // get the first index into queueFamilyProperties which supports both graphics and present
+            uint32_t queueIndex = ~0;
+            for (uint32_t qfpIndex = 0; qfpIndex < queueFamilyProperties.size(); qfpIndex++)
+            {
+                if ((queueFamilyProperties[qfpIndex].queueFlags & vk::QueueFlagBits::eGraphics) && 
+                        m_PhysicalDevice.getSurfaceSupportKHR(qfpIndex, *m_Surface))
+                {
+                    queueIndex = qfpIndex;
+                    break;
+                }
+            }
+            if (queueIndex == ~0)
+            {
+                throw std::runtime_error("Could not find a queue for graphics and presenting -> Terminating");
+            }
+
+            // Vulkan is backward compatible, so everything by default only gives function of 1.0
+            // so explicitely enable the things you need
+            vk::StructureChain<vk::PhysicalDeviceFeatures2,
+                                vk::PhysicalDeviceVulkan11Features,
+                                vk::PhysicalDeviceVulkan13Features,
+                                vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>
+
+                featureChain = {
+                    {},                                // vk::PhysicalDeviceFeatures2 (empty for now)
+                    {.shaderDrawParameters = true},    // Enable shader draw parameters from Vulkan 1.1
+                    {.dynamicRendering = true},        // Enable dynamic rendering from 1.3
+                    {.extendedDynamicState = true}     // Enabled extended dynamic state from extension
+                };
+
+            // Queue priority, required even if 1 queue
+            float queuePriority = 0.5f;
+            // create device
+            vk::DeviceQueueCreateInfo deviceQueueCreateInfo = { .queueFamilyIndex = queueIndex, .queueCount = 1, .pQueuePriorities = &queuePriority };
+
+            // Device features, ignore for now, come back later when needed
+            vk::PhysicalDeviceFeatures deviceFeatures;
+
+            vk::DeviceCreateInfo deviceCreateInfo{
+                .pNext = &featureChain.get<vk::PhysicalDeviceFeatures2>(),
+                .queueCreateInfoCount = 1,
+                .pQueueCreateInfos = &deviceQueueCreateInfo,
+                .enabledExtensionCount = static_cast<uint32_t>(m_RequiredDeviceExtension.size()),
+                .ppEnabledExtensionNames = m_RequiredDeviceExtension.data()
+            };
+
+            m_Device = vk::raii::Device(m_PhysicalDevice, deviceCreateInfo);
+            m_GraphicsQueue = vk::raii::Queue(m_Device, queueIndex, 0);
+        }
+
         void createInstance()
         {
             constexpr vk::ApplicationInfo appInfo{.pApplicationName    = "Hello Triangle",
@@ -181,7 +248,7 @@ class Application
             }
             
             // check if required layers are supported
-            auto layerProperties = context.enumerateInstanceLayerProperties();
+            auto layerProperties = m_Context.enumerateInstanceLayerProperties();
             auto unsupportedLayerIt = std::ranges::find_if(requiredLayers,
                     [&layerProperties](auto const &requiredLayer)
                     {
@@ -201,7 +268,7 @@ class Application
             auto requiredExtensions = getRequiredInstanceExtension();
 
             // Check if required extensions are supported
-            auto extensionProperties = context.enumerateInstanceExtensionProperties();
+            auto extensionProperties = m_Context.enumerateInstanceExtensionProperties();
             auto unsupportedPropertyIt = 
                 std::ranges::find_if(requiredExtensions,
                             [&extensionProperties](auto const &requiredExtension)
@@ -228,10 +295,10 @@ class Application
                 .ppEnabledExtensionNames = requiredExtensions.data()
             };
 
-            instance = vk::raii::Instance(context, createInfo);
+            m_Instance = vk::raii::Instance(m_Context, createInfo);
 
             std::cout << "Available Extensions:\n";
-            auto extensions = context.enumerateInstanceExtensionProperties();
+            auto extensions = m_Context.enumerateInstanceExtensionProperties();
             for (const auto& extension : extensions)
                 std::cout << "\t" << extension.extensionName << "\n";
         }
@@ -301,10 +368,13 @@ class Application
 
 
         // Vulkan stuff
-        vk::raii::Context context;
-        vk::raii::Instance instance = nullptr;
-        vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr;
-        vk::raii::PhysicalDevice physicalDevice = nullptr;
+        vk::raii::Context m_Context;
+        vk::raii::Instance m_Instance = nullptr;
+        vk::raii::DebugUtilsMessengerEXT m_DebugMessenger = nullptr;
+        vk::raii::PhysicalDevice m_PhysicalDevice = nullptr;
+        vk::raii::Device m_Device = nullptr;
+        vk::raii::Queue m_GraphicsQueue = nullptr;
+        vk::raii::SurfaceKHR m_Surface = nullptr;
 };
 
 int main()
